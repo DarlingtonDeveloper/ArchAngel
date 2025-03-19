@@ -10,44 +10,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // GoLinter implements the Linter interface for Go
 type GoLinter struct {
-	// Configuration options
+	*BaseAnalyzer
 	golangciLintPath string
 	staticcheckPath  string
-	timeout          time.Duration
 }
 
 // NewGoLinter creates a new Go linter
-func NewGoLinter(options map[string]string) *GoLinter {
+func NewGoLinter(config map[string]string) *GoLinter {
 	// Default paths
 	golangciLintPath := "golangci-lint"
-	if path, ok := options["golangciLintPath"]; ok && path != "" {
+	if path, ok := config["golangciLintPath"]; ok && path != "" {
 		golangciLintPath = path
 	}
 	
 	staticcheckPath := "staticcheck"
-	if path, ok := options["staticcheckPath"]; ok && path != "" {
+	if path, ok := config["staticcheckPath"]; ok && path != "" {
 		staticcheckPath = path
 	}
 	
-	// Default timeout
-	timeout := 15 * time.Second
-	if timeoutStr, ok := options["timeout"]; ok && timeoutStr != "" {
-		if t, err := time.ParseDuration(timeoutStr); err == nil {
-			timeout = t
-		}
-	}
-	
 	return &GoLinter{
+		BaseAnalyzer:     NewBaseAnalyzer(config),
 		golangciLintPath: golangciLintPath,
 		staticcheckPath:  staticcheckPath,
-		timeout:          timeout,
 	}
 }
 
@@ -58,37 +47,44 @@ func (l *GoLinter) Language() string {
 
 // Analyze analyzes the provided code and returns issues found
 func (l *GoLinter) Analyze(ctx context.Context, code string, options map[string]interface{}) (*AnalysisResult, error) {
+	return l.BaseAnalyzer.CommonAnalyzeWrapper(
+		ctx,
+		code,
+		options,
+		l.findIssues,
+		l.SuggestFixes,
+	)
+}
+
+// findIssues analyzes the code and returns issues
+func (l *GoLinter) findIssues(ctx context.Context, code string, options map[string]interface{}) ([]Issue, error) {
 	// Create a temporary directory for Go module
 	tmpDir, err := ioutil.TempDir("", "codehawk-go")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary directory")
 	}
 	defer os.RemoveAll(tmpDir)
 	
 	// Set up a minimal Go module
 	err = l.setupGoModule(tmpDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set up Go module: %w", err)
+		return nil, l.WrapError(err, "failed to set up Go module")
 	}
 	
 	// Create a temporary file for the code
 	tmpFile := filepath.Join(tmpDir, "main.go")
 	if err := ioutil.WriteFile(tmpFile, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
 	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
-	
 	// Run both linters and combine results
-	golangciIssues, err := l.runGolangciLint(ctxWithTimeout, tmpDir)
+	golangciIssues, err := l.runGolangciLint(ctx, tmpDir)
 	if err != nil {
 		// Log the error but continue with other linters
 		fmt.Printf("Warning: golangci-lint failed: %v\n", err)
 	}
 	
-	staticcheckIssues, err := l.runStaticcheck(ctxWithTimeout, tmpDir)
+	staticcheckIssues, err := l.runStaticcheck(ctx, tmpDir)
 	if err != nil {
 		// Log the error but continue
 		fmt.Printf("Warning: staticcheck failed: %v\n", err)
@@ -97,17 +93,7 @@ func (l *GoLinter) Analyze(ctx context.Context, code string, options map[string]
 	// Combine issues
 	issues := append(golangciIssues, staticcheckIssues...)
 	
-	// Generate suggestions
-	suggestions, err := l.SuggestFixes(ctx, code, issues)
-	if err != nil {
-		// Log the error but continue with the issues we have
-		fmt.Printf("Failed to generate suggestions: %v\n", err)
-	}
-	
-	return &AnalysisResult{
-		Issues:      issues,
-		Suggestions: suggestions,
-	}, nil
+	return issues, nil
 }
 
 // SuggestFixes attempts to generate fixes for the identified issues
@@ -115,29 +101,25 @@ func (l *GoLinter) SuggestFixes(ctx context.Context, code string, issues []Issue
 	// Create a temporary directory for Go module
 	tmpDir, err := ioutil.TempDir("", "codehawk-go-fix")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary directory")
 	}
 	defer os.RemoveAll(tmpDir)
 	
 	// Set up a minimal Go module
 	err = l.setupGoModule(tmpDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set up Go module: %w", err)
+		return nil, l.WrapError(err, "failed to set up Go module")
 	}
 	
 	// Create a temporary file for the code
 	tmpFile := filepath.Join(tmpDir, "main.go")
 	if err := ioutil.WriteFile(tmpFile, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
-	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
 	
 	// Run gofmt to get properly formatted code
 	cmd := exec.CommandContext(
-		ctxWithTimeout,
+		ctx,
 		"gofmt",
 		"-w",
 		tmpFile,
@@ -147,13 +129,13 @@ func (l *GoLinter) SuggestFixes(ctx context.Context, code string, issues []Issue
 	cmd.Stderr = &stderr
 	
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to run gofmt: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run gofmt: %w, stderr: %s", err, stderr.String()), "gofmt execution error")
 	}
 	
 	// Read the formatted code
 	formattedCode, err := ioutil.ReadFile(tmpFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read formatted code: %w", err)
+		return nil, l.WrapError(err, "failed to read formatted code")
 	}
 	
 	// Generate suggestions based on the formatted code and known issue patterns
@@ -229,7 +211,7 @@ func (l *GoLinter) runGolangciLint(ctx context.Context, dir string) ([]Issue, er
 	err := cmd.Run()
 	// Exit code 1 is normal when golangci-lint finds issues
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
-		return nil, fmt.Errorf("failed to run golangci-lint: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run golangci-lint: %w, stderr: %s", err, stderr.String()), "golangci-lint execution error")
 	}
 	
 	// Parse the JSON output
@@ -251,7 +233,7 @@ func (l *GoLinter) runGolangciLint(ctx context.Context, dir string) ([]Issue, er
 	
 	var result GolangciLintResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse golangci-lint output: %w", err)
+		return nil, l.WrapError(err, "failed to parse golangci-lint output")
 	}
 	
 	// Convert golangci-lint issues to CodeHawk issues
@@ -263,9 +245,10 @@ func (l *GoLinter) runGolangciLint(ctx context.Context, dir string) ([]Issue, er
 		}
 		
 		// Map golangci-lint severity to CodeHawk severity
-		severity := "warning"
-		if lintIssue.Severity == "error" {
-			severity = "error"
+		severity := l.BaseAnalyzer.MapSeverity(lintIssue.Severity)
+		if severity == "info" {
+			// Default to warning if not specified
+			severity = "warning"
 		}
 		
 		column := lintIssue.Pos.Column
@@ -305,7 +288,7 @@ func (l *GoLinter) runStaticcheck(ctx context.Context, dir string) ([]Issue, err
 	err := cmd.Run()
 	// Exit code 1 is normal when staticcheck finds issues
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
-		return nil, fmt.Errorf("failed to run staticcheck: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run staticcheck: %w, stderr: %s", err, stderr.String()), "staticcheck execution error")
 	}
 	
 	// Parse the JSON output
@@ -331,7 +314,7 @@ func (l *GoLinter) runStaticcheck(ctx context.Context, dir string) ([]Issue, err
 		
 		var scIssue StaticcheckIssue
 		if err := json.Unmarshal([]byte(line), &scIssue); err != nil {
-			return nil, fmt.Errorf("failed to parse staticcheck output: %w", err)
+			return nil, l.WrapError(err, "failed to parse staticcheck output")
 		}
 		
 		// Skip issues from files other than main.go
@@ -339,11 +322,8 @@ func (l *GoLinter) runStaticcheck(ctx context.Context, dir string) ([]Issue, err
 			continue
 		}
 		
-		// Map staticcheck severity to CodeHawk severity
-		severity := "warning"
-		if scIssue.Severity == "error" {
-			severity = "error"
-		}
+		// Map staticcheck severity to CodeHawk severity using BaseAnalyzer
+		severity := l.BaseAnalyzer.MapSeverity(scIssue.Severity)
 		
 		column := scIssue.Position.Column
 		
@@ -382,10 +362,7 @@ func (l *GoLinter) generateFixForIssue(issue Issue, code string) Issue {
 	lineText := lines[lineIdx]
 	
 	// Generate fix based on rule ID
-	ruleID := ""
-	if issue.RuleID != nil {
-		ruleID = *issue.RuleID
-	}
+	ruleID := issue.RuleID
 	
 	switch {
 	case ruleID == "gofmt":

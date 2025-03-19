@@ -10,16 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // JavaScriptLinter implements the Linter interface for JavaScript and TypeScript
 type JavaScriptLinter struct {
-	// Configuration options
-	eslintPath   string
-	configPath   string
+	*BaseAnalyzer
+	eslintPath     string
+	configPath     string
 	typescriptMode bool
-	timeout      time.Duration
 }
 
 // ESLintResult represents the result from ESLint
@@ -42,37 +40,30 @@ type ESLintResult struct {
 }
 
 // NewJavaScriptLinter creates a new JavaScript linter
-func NewJavaScriptLinter(options map[string]string) *JavaScriptLinter {
+func NewJavaScriptLinter(config map[string]string) *JavaScriptLinter {
 	// Default ESLint path
 	eslintPath := "eslint"
-	if path, ok := options["eslintPath"]; ok && path != "" {
+	if path, ok := config["eslintPath"]; ok && path != "" {
 		eslintPath = path
 	}
 	
 	// Default config path
 	configPath := ""
-	if path, ok := options["configPath"]; ok && path != "" {
+	if path, ok := config["configPath"]; ok && path != "" {
 		configPath = path
 	}
 	
-	// Default timeout
-	timeout := 10 * time.Second
-	if timeoutStr, ok := options["timeout"]; ok && timeoutStr != "" {
-		if t, err := time.ParseDuration(timeoutStr); err == nil {
-			timeout = t
-		}
-	}
-	
 	return &JavaScriptLinter{
-		eslintPath: eslintPath,
-		configPath: configPath,
-		timeout:    timeout,
+		BaseAnalyzer:   NewBaseAnalyzer(config),
+		eslintPath:     eslintPath,
+		configPath:     configPath,
+		typescriptMode: false,
 	}
 }
 
 // NewTypeScriptLinter creates a new TypeScript linter
-func NewTypeScriptLinter(options map[string]string) *JavaScriptLinter {
-	linter := NewJavaScriptLinter(options)
+func NewTypeScriptLinter(config map[string]string) *JavaScriptLinter {
+	linter := NewJavaScriptLinter(config)
 	linter.typescriptMode = true
 	return linter
 }
@@ -87,10 +78,21 @@ func (l *JavaScriptLinter) Language() string {
 
 // Analyze analyzes the provided code and returns issues found
 func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map[string]interface{}) (*AnalysisResult, error) {
+	return l.BaseAnalyzer.CommonAnalyzeWrapper(
+		ctx,
+		code,
+		options,
+		l.findIssues,
+		l.SuggestFixes,
+	)
+}
+
+// findIssues analyzes the code and returns issues
+func (l *JavaScriptLinter) findIssues(ctx context.Context, code string, options map[string]interface{}) ([]Issue, error) {
 	// Create a temporary directory
 	tmpDir, err := ioutil.TempDir("", "codehawk-eslint")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary directory")
 	}
 	defer os.RemoveAll(tmpDir)
 	
@@ -102,12 +104,8 @@ func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map
 	
 	tmpFile := filepath.Join(tmpDir, "code"+ext)
 	if err := ioutil.WriteFile(tmpFile, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
-	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
 	
 	// Prepare ESLint command
 	args := []string{
@@ -122,7 +120,7 @@ func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map
 		configFile := filepath.Join(tmpDir, ".eslintrc.json")
 		defaultConfig := l.getDefaultConfig()
 		if err := ioutil.WriteFile(configFile, []byte(defaultConfig), 0644); err != nil {
-			return nil, fmt.Errorf("failed to write default ESLint config: %w", err)
+			return nil, l.WrapError(err, "failed to write default ESLint config")
 		}
 		args = append(args, "--config", configFile)
 	}
@@ -132,7 +130,7 @@ func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map
 	
 	// Run ESLint
 	cmd := exec.CommandContext(
-		ctxWithTimeout,
+		ctx,
 		l.eslintPath,
 		args...,
 	)
@@ -145,19 +143,17 @@ func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map
 	err = cmd.Run()
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
 		// exit status 1 is normal for ESLint when it finds issues
-		return nil, fmt.Errorf("failed to run ESLint: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run ESLint: %w, stderr: %s", err, stderr.String()), "eslint execution error")
 	}
 	
 	// Parse the JSON output
 	var eslintResults []ESLintResult
 	if err := json.Unmarshal(stdout.Bytes(), &eslintResults); err != nil {
-		return nil, fmt.Errorf("failed to parse ESLint output: %w", err)
+		return nil, l.WrapError(err, "failed to parse ESLint output")
 	}
 	
 	if len(eslintResults) == 0 {
-		return &AnalysisResult{
-			Issues: []Issue{},
-		}, nil
+		return []Issue{}, nil
 	}
 	
 	// Convert ESLint results to CodeHawk issues
@@ -169,9 +165,7 @@ func (l *JavaScriptLinter) Analyze(ctx context.Context, code string, options map
 		}
 	}
 	
-	return &AnalysisResult{
-		Issues: issues,
-	}, nil
+	return issues, nil
 }
 
 // SuggestFixes attempts to generate fixes for the identified issues
@@ -179,7 +173,7 @@ func (l *JavaScriptLinter) SuggestFixes(ctx context.Context, code string, issues
 	// Create a temporary directory
 	tmpDir, err := ioutil.TempDir("", "codehawk-eslint-fix")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary directory")
 	}
 	defer os.RemoveAll(tmpDir)
 	
@@ -191,12 +185,8 @@ func (l *JavaScriptLinter) SuggestFixes(ctx context.Context, code string, issues
 	
 	tmpFile := filepath.Join(tmpDir, "code"+ext)
 	if err := ioutil.WriteFile(tmpFile, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
-	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
 	
 	// Prepare ESLint command with --fix option
 	args := []string{
@@ -212,7 +202,7 @@ func (l *JavaScriptLinter) SuggestFixes(ctx context.Context, code string, issues
 		configFile := filepath.Join(tmpDir, ".eslintrc.json")
 		defaultConfig := l.getDefaultConfig()
 		if err := ioutil.WriteFile(configFile, []byte(defaultConfig), 0644); err != nil {
-			return nil, fmt.Errorf("failed to write default ESLint config: %w", err)
+			return nil, l.WrapError(err, "failed to write default ESLint config")
 		}
 		args = append(args, "--config", configFile)
 	}
@@ -222,7 +212,7 @@ func (l *JavaScriptLinter) SuggestFixes(ctx context.Context, code string, issues
 	
 	// Run ESLint with fix
 	cmd := exec.CommandContext(
-		ctxWithTimeout,
+		ctx,
 		l.eslintPath,
 		args...,
 	)
@@ -234,13 +224,13 @@ func (l *JavaScriptLinter) SuggestFixes(ctx context.Context, code string, issues
 	err = cmd.Run()
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
 		// exit status 1 is normal for ESLint when it finds issues
-		return nil, fmt.Errorf("failed to run ESLint fix: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run ESLint fix: %w, stderr: %s", err, stderr.String()), "eslint fix execution error")
 	}
 	
 	// Read the fixed code
 	fixedCode, err := ioutil.ReadFile(tmpFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read fixed code: %w", err)
+		return nil, l.WrapError(err, "failed to read fixed code")
 	}
 	
 	// Create suggestions for the issues that have a fix
