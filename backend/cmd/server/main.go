@@ -2,23 +2,45 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/yourusername/codehawk/backend/pkg/analyzer"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/yourusername/codehawk/backend/internal/db"
+	"github.com/yourusername/codehawk/backend/internal/repository"
+	"github.com/yourusername/codehawk/backend/internal/service"
+	"github.com/yourusername/codehawk/backend/pkg/ai"
+	"github.com/yourusername/codehawk/backend/pkg/analyzer"
 )
 
-// Global linter registry
-var linterRegistry *analyzer.LinterRegistry
+// Application configuration
+type Config struct {
+	Port           int
+	ApiKey         string
+	LogLevel       string
+	DbConfig       db.Config
+	AiEnabled      bool
+	AiEndpoint     string
+	AiApiKey       string
+	AiModel        string
+	AiProvider     string
+	CachingEnabled bool
+}
+
+// Global services
+var (
+	linterRegistry *analyzer.LinterRegistry
+	analysisService *service.AnalysisService
+	userRepository repository.UserRepository
+)
 
 func main() {
 	// Load environment variables
@@ -26,25 +48,49 @@ func main() {
 		log.Println("No .env file found, using environment variables")
 	}
 
-	// Initialize the linter registry
-	initLinterRegistry()
+	// Load configuration
+	config := loadConfig()
+
+	// Initialize components
+	dbConn, err := setupDatabase(config.DbConfig)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+
+	// Initialize repositories
+	analysisRepo := repository.NewPostgresAnalysisRepository(dbConn)
+	userRepository = repository.NewPostgresUserRepository(dbConn)
+
+	// Initialize linter registry
+	linterRegistry = analyzer.NewLinterRegistry()
+	linterRegistry.RegisterDefaultLinters()
+
+	// Initialize AI service if enabled
+	var aiService ai.AISuggestionService
+	if config.AiEnabled {
+		aiService = setupAIService(config)
+	}
+
+	// Initialize analysis service
+	analysisService = service.NewAnalysisService(
+		linterRegistry,
+		analysisRepo,
+		aiService,
+		config.AiEnabled,
+	)
 
 	// Set up the server
-	router := setupRouter()
+	router := setupRouter(config)
 	
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	
+	serverAddr := fmt.Sprintf(":%d", config.Port)
 	server := &http.Server{
-		Addr:    ":" + port,
+		Addr:    serverAddr,
 		Handler: router,
 	}
 
 	// Start the server in a goroutine
 	go func() {
-		log.Printf("Starting CodeHawk API server on port %s\n", port)
+		log.Printf("Starting CodeHawk API server on port %d\n", config.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Error starting server: %v\n", err)
 		}
@@ -67,37 +113,142 @@ func main() {
 	log.Println("Server exited properly")
 }
 
-// Initialize linter registry with supported linters
-func initLinterRegistry() {
-	linterRegistry = analyzer.NewLinterRegistry()
-	
-	// Register Python linter
-	pythonLinter := analyzer.NewPythonLinter(map[string]string{
-		"pylintPath": os.Getenv("PYLINT_PATH"),
-		"timeout":    "15s",
-	})
-	linterRegistry.Register(pythonLinter)
-	
-	// Register JavaScript linter
-	jsLinter := analyzer.NewJavaScriptLinter(map[string]string{
-		"eslintPath": os.Getenv("ESLINT_PATH"),
-		"configPath": os.Getenv("ESLINT_CONFIG"),
-		"timeout":    "15s",
-	})
-	linterRegistry.Register(jsLinter)
-	
-	// Register TypeScript linter
-	tsLinter := analyzer.NewTypeScriptLinter(map[string]string{
-		"eslintPath": os.Getenv("ESLINT_PATH"),
-		"configPath": os.Getenv("TSLINT_CONFIG"),
-		"timeout":    "15s",
-	})
-	linterRegistry.Register(tsLinter)
-	
-	log.Printf("Initialized linter registry with %d linters\n", len(linterRegistry.GetSupportedLanguages()))
+// Load configuration from environment variables
+func loadConfig() Config {
+	config := Config{
+		Port:     8080,
+		ApiKey:   "demo_api_key_123",
+		LogLevel: "info",
+		DbConfig: db.NewDefaultConfig(),
+	}
+
+	// Load from environment variables
+	if port, err := strconv.Atoi(os.Getenv("PORT")); err == nil {
+		config.Port = port
+	}
+
+	if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+		config.ApiKey = apiKey
+	}
+
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		config.LogLevel = logLevel
+	}
+
+	// Database config
+	if dbHost := os.Getenv("DB_HOST"); dbHost != "" {
+		config.DbConfig.Host = dbHost
+	}
+
+	if dbPort, err := strconv.Atoi(os.Getenv("DB_PORT")); err == nil {
+		config.DbConfig.Port = dbPort
+	}
+
+	if dbUser := os.Getenv("DB_USER"); dbUser != "" {
+		config.DbConfig.User = dbUser
+	}
+
+	if dbPassword := os.Getenv("DB_PASSWORD"); dbPassword != "" {
+		config.DbConfig.Password = dbPassword
+	}
+
+	if dbName := os.Getenv("DB_NAME"); dbName != "" {
+		config.DbConfig.Database = dbName
+	}
+
+	if dbSSLMode := os.Getenv("DB_SSL_MODE"); dbSSLMode != "" {
+		config.DbConfig.SSLMode = dbSSLMode
+	}
+
+	// AI Service configuration
+	if aiEnabled, err := strconv.ParseBool(os.Getenv("AI_ENABLED")); err == nil {
+		config.AiEnabled = aiEnabled
+	}
+
+	if aiEndpoint := os.Getenv("AI_ENDPOINT"); aiEndpoint != "" {
+		config.AiEndpoint = aiEndpoint
+	}
+
+	if aiApiKey := os.Getenv("AI_API_KEY"); aiApiKey != "" {
+		config.AiApiKey = aiApiKey
+	}
+
+	if aiModel := os.Getenv("AI_MODEL"); aiModel != "" {
+		config.AiModel = aiModel
+	}
+
+	if aiProvider := os.Getenv("AI_PROVIDER"); aiProvider != "" {
+		config.AiProvider = aiProvider
+	}
+
+	if cachingEnabled, err := strconv.ParseBool(os.Getenv("CACHING_ENABLED")); err == nil {
+		config.CachingEnabled = cachingEnabled
+	} else {
+		config.CachingEnabled = true // Default to enabled
+	}
+
+	return config
 }
 
-func setupRouter() *gin.Engine {
+// Set up database connection
+func setupDatabase(config db.Config) (*sqlx.DB, error) {
+	return db.Connect(config)
+}
+
+// Set up AI service
+func setupAIService(config Config) ai.AISuggestionService {
+	// Create base AI service configuration
+	aiConfig := ai.NewDefaultConfig()
+	
+	// Override with configuration
+	if config.AiEndpoint != "" {
+		aiConfig.Endpoint = config.AiEndpoint
+	}
+	
+	if config.AiApiKey != "" {
+		aiConfig.APIKey = config.AiApiKey
+	}
+	
+	if config.AiModel != "" {
+		aiConfig.Model = config.AiModel
+	}
+	
+	aiConfig.EnableCaching = config.CachingEnabled
+
+	// Create the provider
+	provider := ai.GetProviderFromString(config.AiProvider)
+	
+	// Create the base service
+	baseService := ai.NewAIService(aiConfig, provider)
+	
+	// Add retry capability
+	retryConfig := ai.NewDefaultRetryConfig()
+	retryableService := ai.NewRetryableAIService(baseService, retryConfig)
+	
+	// Add caching if enabled
+	if config.CachingEnabled {
+		cachedService := ai.NewCachedAIService(retryableService, aiConfig)
+		
+		// Start cache cleanup
+		if cachingService, ok := cachedService.(*ai.CachedAIService); ok {
+			cachingService.StartCacheCleanup(10 * time.Minute)
+		}
+		
+		return cachedService
+	}
+	
+	return retryableService
+}
+
+// Set up the HTTP router
+func setupRouter(config Config) *gin.Engine {
+	// Set Gin mode
+	if config.LogLevel == "debug" {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	router := gin.Default()
 	
 	// Configure CORS
@@ -118,11 +269,8 @@ func setupRouter() *gin.Engine {
 			return
 		}
 		
-		// Get API key from environment (for development)
-		apiKey := os.Getenv("API_KEY")
-		if apiKey == "" {
-			apiKey = "demo_api_key_123" // Default development API key
-		}
+		// Get API key
+		apiKey := config.ApiKey
 		
 		// Check if request has the API key
 		requestApiKey := c.GetHeader("X-API-Key")
@@ -137,12 +285,15 @@ func setupRouter() *gin.Engine {
 		
 		// Validate API key
 		if requestApiKey != apiKey {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"status":  "error",
-				"message": "Invalid API key",
-			})
-			c.Abort()
-			return
+			// Check if it's a user API key
+			if user, err := userRepository.GetUserByAPIKey(c.Request.Context(), requestApiKey); err != nil || user == nil {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"status":  "error",
+					"message": "Invalid API key",
+				})
+				c.Abort()
+				return
+			}
 		}
 		
 		c.Next()
@@ -155,6 +306,7 @@ func setupRouter() *gin.Engine {
 			"time":     time.Now().Format(time.RFC3339),
 			"version":  "0.1.0",
 			"linters":  linterRegistry.GetSupportedLanguages(),
+			"ai":       config.AiEnabled,
 		})
 	})
 	
@@ -162,32 +314,27 @@ func setupRouter() *gin.Engine {
 	v1 := router.Group("/api/v1")
 	{
 		// Code analysis endpoint
-		v1.POST("/analyze", analyzeCode)
+		v1.POST("/analyze", handleAnalyzeCode)
 		
 		// Get analysis results by ID
-		v1.GET("/analysis/:id", getAnalysisById)
+		v1.GET("/analysis/:id", handleGetAnalysisById)
 		
 		// Get language-specific rules
-		v1.GET("/rules/:language", getLanguageRules)
+		v1.GET("/rules/:language", handleGetLanguageRules)
 		
 		// Get supported languages
-		v1.GET("/languages", getSupportedLanguages)
+		v1.GET("/languages", handleGetSupportedLanguages)
 		
 		// Webhook notifications
-		v1.POST("/webhook/notify", webhookNotify)
+		v1.POST("/webhook/notify", handleWebhookNotify)
 	}
 	
 	return router
 }
 
 // Handler for code analysis endpoint
-func analyzeCode(c *gin.Context) {
-	var request struct {
-		Code     string                 `json:"code" binding:"required"`
-		Language string                 `json:"language" binding:"required"`
-		Context  string                 `json:"context"`
-		Options  map[string]interface{} `json:"options"`
-	}
+func handleAnalyzeCode(c *gin.Context) {
+	var request service.AnalysisRequest
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -197,26 +344,14 @@ func analyzeCode(c *gin.Context) {
 		return
 	}
 	
-	// Check if we have a linter for this language
-	linter, ok := linterRegistry.GetLinter(request.Language)
-	if !ok {
-		// Fall back to generic analysis
-		result := analyzeGenericCode(request.Code)
-		
-		c.JSON(http.StatusOK, gin.H{
-			"status":    "success",
-			"id":        fmt.Sprintf("analysis-%d", time.Now().UnixNano()),
-			"language":  request.Language,
-			"context":   request.Context,
-			"timestamp": time.Now().Format(time.RFC3339),
-			"issues":    result,
-		})
-		return
+	// Add user ID if authenticated via API key
+	requestApiKey := c.GetHeader("X-API-Key")
+	if user, err := userRepository.GetUserByAPIKey(c.Request.Context(), requestApiKey); err == nil && user != nil {
+		request.UserID = user.ID
 	}
 	
-	// Analyze the code using the appropriate linter
-	ctx := context.Background()
-	result, err := linter.Analyze(ctx, request.Code, request.Options)
+	// Analyze the code
+	result, err := analysisService.AnalyzeCode(c.Request.Context(), request)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
@@ -225,57 +360,51 @@ func analyzeCode(c *gin.Context) {
 		return
 	}
 	
-	// Generate suggestions if not already included
-	if len(result.Suggestions) == 0 {
-		suggestions, err := linter.SuggestFixes(ctx, request.Code, result.Issues)
-		if err == nil && len(suggestions) > 0 {
-			result.Suggestions = suggestions
-		}
-	}
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":      "success",
-		"id":          fmt.Sprintf("analysis-%d", time.Now().UnixNano()),
-		"language":    request.Language,
-		"context":     request.Context,
-		"timestamp":   time.Now().Format(time.RFC3339),
-		"issues":      result.Issues,
-		"suggestions": result.Suggestions,
-	})
+	c.JSON(http.StatusOK, result)
 }
 
 // Handler for getting analysis by ID
-func getAnalysisById(c *gin.Context) {
+func handleGetAnalysisById(c *gin.Context) {
 	id := c.Param("id")
 	
-	// In a real implementation, we would retrieve the analysis from a database
-	// For now, return a mock response
+	// Get the analysis
+	result, err := analysisService.GetAnalysisById(c.Request.Context(), id)
+	if err != nil {
+		// Check for specific errors
+		if err.Error() == "analysis not found" {
+			c.JSON(http.StatusNotFound, gin.H{
+				"status":  "error",
+				"message": "Analysis not found",
+			})
+			return
+		}
+		
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  "error",
+			"message": "Failed to get analysis: " + err.Error(),
+		})
+		return
+	}
 	
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "success",
-		"id":        id,
-		"language":  "python",
-		"timestamp": time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
-		"issues": []map[string]interface{}{
-			{
-				"line":     1,
-				"message":  "Missing docstring",
-				"severity": "warning",
-				"ruleId":   "missing-docstring",
-			},
-			{
-				"line":     1,
-				"message":  "Use logging instead of print",
-				"severity": "suggestion",
-				"ruleId":   "print-used",
-			},
-		},
-	})
+	c.JSON(http.StatusOK, result)
 }
 
 // Handler for getting language-specific rules
-func getLanguageRules(c *gin.Context) {
+func handleGetLanguageRules(c *gin.Context) {
 	language := c.Param("language")
+	
+	// Get linter for this language
+	linter, ok := linterRegistry.GetLinter(language)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{
+			"status":  "error",
+			"message": "Language not supported",
+		})
+		return
+	}
+	
+	// In a real implementation, we would get rules from the linter
+	// For now, return sample data
 	
 	var rules []map[string]interface{}
 	
@@ -295,8 +424,7 @@ func getLanguageRules(c *gin.Context) {
 				"severity":    "suggestion",
 			},
 		}
-	case "javascript":
-	case "typescript":
+	case "javascript", "typescript":
 		rules = []map[string]interface{}{
 			{
 				"id":          "semi",
@@ -323,7 +451,7 @@ func getLanguageRules(c *gin.Context) {
 }
 
 // Handler for getting supported languages
-func getSupportedLanguages(c *gin.Context) {
+func handleGetSupportedLanguages(c *gin.Context) {
 	languages := linterRegistry.GetSupportedLanguages()
 	
 	c.JSON(http.StatusOK, gin.H{
@@ -333,7 +461,7 @@ func getSupportedLanguages(c *gin.Context) {
 }
 
 // Handler for webhook notifications
-func webhookNotify(c *gin.Context) {
+func handleWebhookNotify(c *gin.Context) {
 	var request struct {
 		AnalysisId string `json:"analysis_id" binding:"required"`
 		Event      string `json:"event" binding:"required"`
@@ -353,18 +481,4 @@ func webhookNotify(c *gin.Context) {
 		"status":  "success",
 		"message": fmt.Sprintf("Received notification for analysis %s: %s", request.AnalysisId, request.Event),
 	})
-}
-
-// Utility functions for analyzing code when no specific linter is available
-
-func analyzeGenericCode(code string) []map[string]interface{} {
-	// This would be replaced with generic code analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Line too long (>100 characters)",
-			"severity": "warning",
-			"ruleId":   "line-length",
-		},
-	}
 }
