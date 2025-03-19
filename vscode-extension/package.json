@@ -4,6 +4,12 @@
     "description": "Smart Linting & Automated Code Review with AI-powered suggestions",
     "version": "0.1.0",
     "publisher": "codehawk",
+    "private": true,
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/yourusername/codehawk.git"
+    },
     "engines": {
         "vscode": "^1.60.0"
     },
@@ -11,6 +17,13 @@
         "Linters",
         "Programming Languages",
         "Other"
+    ],
+    "keywords": [
+        "linting",
+        "code review",
+        "code quality",
+        "ai",
+        "suggestions"
     ],
     "activationEvents": [
         "onCommand:codehawk.analyzeCurrentFile",
@@ -30,19 +43,67 @@
         "commands": [
             {
                 "command": "codehawk.analyzeCurrentFile",
-                "title": "CodeHawk: Analyze Current File"
+                "title": "CodeHawk: Analyze Current File",
+                "icon": {
+                    "light": "media/analyze-light.svg",
+                    "dark": "media/analyze-dark.svg"
+                }
             },
             {
                 "command": "codehawk.analyzeSelection",
-                "title": "CodeHawk: Analyze Selected Code"
+                "title": "CodeHawk: Analyze Selected Code",
+                "icon": {
+                    "light": "media/analyze-selection-light.svg",
+                    "dark": "media/analyze-selection-dark.svg"
+                }
             },
             {
                 "command": "codehawk.showResults",
-                "title": "CodeHawk: Show Analysis Results"
+                "title": "CodeHawk: Show Analysis Results",
+                "icon": {
+                    "light": "media/results-light.svg",
+                    "dark": "media/results-dark.svg"
+                }
             },
             {
                 "command": "codehawk.configure",
-                "title": "CodeHawk: Configure Settings"
+                "title": "CodeHawk: Configure Settings",
+                "icon": {
+                    "light": "media/settings-light.svg",
+                    "dark": "media/settings-dark.svg"
+                }
+            },
+            {
+                "command": "codehawk.clearDiagnostics",
+                "title": "CodeHawk: Clear Diagnostics",
+                "icon": {
+                    "light": "media/clear-light.svg",
+                    "dark": "media/clear-dark.svg"
+                }
+            },
+            {
+                "command": "codehawk.refreshResults",
+                "title": "Refresh",
+                "icon": {
+                    "light": "media/refresh-light.svg",
+                    "dark": "media/refresh-dark.svg"
+                }
+            },
+            {
+                "command": "codehawk.navigateToIssue",
+                "title": "Go to Issue"
+            },
+            {
+                "command": "codehawk.applySuggestion",
+                "title": "Apply Suggestion"
+            },
+            {
+                "command": "codehawk.showRuleInfo",
+                "title": "Learn More About This Rule"
+            },
+            {
+                "command": "codehawk.ignoreRule",
+                "title": "Ignore Rule"
             }
         ],
         "menus": {
@@ -51,12 +112,41 @@
                     "when": "editorHasSelection",
                     "command": "codehawk.analyzeSelection",
                     "group": "9_cutcopypaste"
+                },
+                {
+                    "command": "codehawk.analyzeCurrentFile",
+                    "group": "9_cutcopypaste"
                 }
             ],
             "editor/title": [
                 {
                     "command": "codehawk.analyzeCurrentFile",
+                    "group": "navigation",
+                    "when": "resourceLangId =~ /^(javascript|typescript|python|go|java|csharp|php|ruby)$/"
+                }
+            ],
+            "view/title": [
+                {
+                    "command": "codehawk.refreshResults",
+                    "when": "view == codehawkResults",
                     "group": "navigation"
+                },
+                {
+                    "command": "codehawk.clearDiagnostics",
+                    "when": "view == codehawkResults",
+                    "group": "navigation"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "codehawk.navigateToIssue",
+                    "when": "viewItem == issue",
+                    "group": "inline"
+                },
+                {
+                    "command": "codehawk.applySuggestion",
+                    "when": "viewItem == suggestion",
+                    "group": "inline"
                 }
             ]
         },
@@ -82,6 +172,26 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Show issues inline in the editor"
+                },
+                "codehawk.telemetryEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable anonymous usage data collection to help improve CodeHawk"
+                },
+                "codehawk.ignoredRules": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Rules to ignore during analysis"
+                },
+                "codehawk.severityLevels": {
+                    "type": "object",
+                    "default": {
+                        "error": "error",
+                        "warning": "warning",
+                        "suggestion": "info",
+                        "info": "info"
+                    },
+                    "description": "Mapping of API severity levels to VS Code DiagnosticSeverity"
                 }
             }
         },
@@ -105,29 +215,47 @@
                     "name": "AI Suggestions"
                 }
             ]
-        }
+        },
+        "viewsWelcome": [
+            {
+                "view": "codehawkResults",
+                "contents": "No analysis results yet.\n[Analyze Current File](command:codehawk.analyzeCurrentFile)\n[Configure CodeHawk](command:codehawk.configure)"
+            },
+            {
+                "view": "codehawkSuggestions",
+                "contents": "No suggestions available yet.\n[Analyze Current File](command:codehawk.analyzeCurrentFile)\n[Configure CodeHawk](command:codehawk.configure)"
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "lint": "eslint src --ext ts",
-        "test": "node ./out/test/runTest.js"
+        "pretest": "npm run compile && npm run lint",
+        "test": "node ./out/test/runTest.js",
+        "package": "vsce package",
+        "publish": "vsce publish"
     },
     "devDependencies": {
         "@types/glob": "^7.1.4",
         "@types/mocha": "^9.0.0",
         "@types/node": "14.x",
+        "@types/sinon": "^10.0.13",
         "@types/vscode": "^1.60.0",
         "@typescript-eslint/eslint-plugin": "^4.31.1",
         "@typescript-eslint/parser": "^4.31.1",
         "eslint": "^7.32.0",
         "glob": "^7.1.7",
         "mocha": "^9.1.1",
+        "sinon": "^14.0.0",
         "typescript": "^4.4.3",
+        "vsce": "^2.9.2",
         "vscode-test": "^1.6.1"
     },
     "dependencies": {
-        "axios": "^0.24.0"
+        "axios": "^0.24.0",
+        "md5": "^2.3.0",
+        "vscode-uri": "^3.0.3"
     }
 }
