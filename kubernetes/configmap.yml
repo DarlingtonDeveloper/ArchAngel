@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codehawk-config
+  namespace: codehawk
+data:
+  # API server configuration
+  PORT: "8080"
+  LOG_LEVEL: "info"
+  
+  # Database configuration
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "codehawk"
+  DB_USER: "postgres"
+  
+  # Redis configuration
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  
+  # Linters configuration
+  PYLINT_PATH: "/usr/local/bin/pylint"
+  ESLINT_PATH: "/usr/local/bin/eslint"
+  
+  # Monitoring configuration
+  ENABLE_METRICS: "true"
+  METRICS_PORT: "9090"
+  
+  # AI Service configuration
+  AI_PROVIDER: "openai"
+  AI_MODEL: "gpt-4"
+  AI_MAX_TOKENS: "2048"
+  AI_TEMPERATURE: "0.3"
