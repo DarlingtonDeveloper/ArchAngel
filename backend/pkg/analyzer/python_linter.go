@@ -11,35 +11,25 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // PythonLinter implements the Linter interface for Python
 type PythonLinter struct {
-	// Configuration options
+	*BaseAnalyzer
 	pylintPath string
-	timeout    time.Duration
 }
 
 // NewPythonLinter creates a new Python linter
-func NewPythonLinter(options map[string]string) *PythonLinter {
+func NewPythonLinter(config map[string]string) *PythonLinter {
 	// Default pylint path
 	pylintPath := "pylint"
-	if path, ok := options["pylintPath"]; ok && path != "" {
+	if path, ok := config["pylintPath"]; ok && path != "" {
 		pylintPath = path
 	}
 	
-	// Default timeout
-	timeout := 10 * time.Second
-	if timeoutStr, ok := options["timeout"]; ok && timeoutStr != "" {
-		if t, err := time.ParseDuration(timeoutStr); err == nil {
-			timeout = t
-		}
-	}
-	
 	return &PythonLinter{
-		pylintPath: pylintPath,
-		timeout:    timeout,
+		BaseAnalyzer: NewBaseAnalyzer(config),
+		pylintPath:   pylintPath,
 	}
 }
 
@@ -50,29 +40,36 @@ func (l *PythonLinter) Language() string {
 
 // Analyze analyzes the provided code and returns issues found
 func (l *PythonLinter) Analyze(ctx context.Context, code string, options map[string]interface{}) (*AnalysisResult, error) {
+	return l.BaseAnalyzer.CommonAnalyzeWrapper(
+		ctx,
+		code,
+		options,
+		l.findIssues,
+		l.SuggestFixes,
+	)
+}
+
+// findIssues analyzes the code and returns issues
+func (l *PythonLinter) findIssues(ctx context.Context, code string, options map[string]interface{}) ([]Issue, error) {
 	// Create a temporary file for the code
 	tmpFile, err := ioutil.TempFile("", "codehawk-*.py")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary file")
 	}
 	defer os.Remove(tmpFile.Name())
 	
 	// Write the code to the temporary file
 	if _, err := tmpFile.Write([]byte(code)); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
 	
 	if err := tmpFile.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to close temporary file")
 	}
-	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
 	
 	// Run pylint on the temporary file
 	cmd := exec.CommandContext(
-		ctxWithTimeout,
+		ctx,
 		l.pylintPath,
 		"--output-format=json",
 		tmpFile.Name(),
@@ -86,13 +83,13 @@ func (l *PythonLinter) Analyze(ctx context.Context, code string, options map[str
 	err = cmd.Run()
 	if err != nil && err.Error() != "exit status 1" {
 		// exit status 1 is normal for pylint when it finds issues
-		return nil, fmt.Errorf("failed to run pylint: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run pylint: %w, stderr: %s", err, stderr.String()), "pylint execution error")
 	}
 	
 	// Parse the JSON output
 	var pylintResults []map[string]interface{}
 	if err := json.Unmarshal(stdout.Bytes(), &pylintResults); err != nil {
-		return nil, fmt.Errorf("failed to parse pylint output: %w", err)
+		return nil, l.WrapError(err, "failed to parse pylint output")
 	}
 	
 	// Convert pylint results to CodeHawk issues
@@ -102,17 +99,7 @@ func (l *PythonLinter) Analyze(ctx context.Context, code string, options map[str
 		issues = append(issues, issue)
 	}
 	
-	// Generate suggestions
-	suggestions, err := l.SuggestFixes(ctx, code, issues)
-	if err != nil {
-		// Log the error but continue with the issues we have
-		fmt.Printf("Failed to generate suggestions: %v\n", err)
-	}
-	
-	return &AnalysisResult{
-		Issues:      issues,
-		Suggestions: suggestions,
-	}, nil
+	return issues, nil
 }
 
 // SuggestFixes attempts to generate fixes for the identified issues
@@ -120,26 +107,22 @@ func (l *PythonLinter) SuggestFixes(ctx context.Context, code string, issues []I
 	// Create a temporary file for the code
 	tmpFile, err := ioutil.TempFile("", "codehawk-*.py")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to create temporary file")
 	}
 	defer os.Remove(tmpFile.Name())
 	
 	// Write the code to the temporary file
 	if _, err := tmpFile.Write([]byte(code)); err != nil {
-		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to write to temporary file")
 	}
 	
 	if err := tmpFile.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close temporary file: %w", err)
+		return nil, l.WrapError(err, "failed to close temporary file")
 	}
-	
-	// Create a timeout context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, l.timeout)
-	defer cancel()
 	
 	// Run pycodestyle for suggestions
 	cmd := exec.CommandContext(
-		ctxWithTimeout,
+		ctx,
 		"pycodestyle",
 		"--format=%(path)s:%(row)d:%(col)d: %(code)s %(text)s",
 		tmpFile.Name(),
@@ -153,7 +136,7 @@ func (l *PythonLinter) SuggestFixes(ctx context.Context, code string, issues []I
 	err = cmd.Run()
 	if err != nil && err.Error() != "exit status 1" {
 		// exit status 1 is normal when it finds issues
-		return nil, fmt.Errorf("failed to run pycodestyle: %w, stderr: %s", err, stderr.String())
+		return nil, l.WrapError(fmt.Errorf("failed to run pycodestyle: %w, stderr: %s", err, stderr.String()), "pycodestyle execution error")
 	}
 	
 	// Parse the output and generate suggestions
@@ -208,6 +191,22 @@ func (l *PythonLinter) SuggestFixes(ctx context.Context, code string, issues []I
 		suggestions = append(suggestions, suggestion)
 	}
 	
+	// Also generate suggestions for existing issues
+	for _, issue := range issues {
+		fix := l.generateFix(code, issue.Line, issue.Column != nil ? *issue.Column : 0, issue.RuleID)
+		if fix != nil {
+			suggestion := Issue{
+				Line:     issue.Line,
+				Column:   issue.Column,
+				Message:  fmt.Sprintf("Suggested fix for: %s", issue.Message),
+				Severity: "suggestion",
+				RuleID:   issue.RuleID,
+				Fix:      fix,
+			}
+			suggestions = append(suggestions, suggestion)
+		}
+	}
+	
 	return suggestions, nil
 }
 
@@ -220,7 +219,7 @@ func (l *PythonLinter) convertPylintResult(result map[string]interface{}) Issue 
 	message := result["message"].(string)
 	symbol := result["symbol"].(string)
 	
-	// Map pylint category to CodeHawk severity
+	// Map pylint category to CodeHawk severity using BaseAnalyzer method
 	var severity string
 	switch result["type"] {
 	case "error", "fatal":
@@ -298,8 +297,7 @@ func (l *PythonLinter) generateFix(code string, line, column int, ruleID string)
 			Replacement: lineText + "\n\n",
 		}
 		
-	case "C0111": // Missing docstring
-	case "missing-docstring":
+	case "C0111", "missing-docstring":
 		indent := getIndentation(lineText)
 		
 		if strings.Contains(lineText, "def ") {
@@ -324,23 +322,6 @@ func (l *PythonLinter) generateFix(code string, line, column int, ruleID string)
 				Replacement: replacement,
 			}
 		}
-		
-	case "E303": // Too many blank lines
-		return &IssueFix{
-			Description: "Remove extra blank lines",
-			Replacement: lineText,
-		}
-		
-	case "W0311": // Bad indentation
-	case "bad-indentation":
-		// Try to fix indentation (assuming 4 spaces)
-		indent := getIndentation(lineText)
-		properIndent := getProperIndentation(indent)
-		replacement := properIndent + strings.TrimLeft(lineText, " \t")
-		return &IssueFix{
-			Description: "Fix indentation",
-			Replacement: replacement,
-		}
 	}
 	
 	return nil
@@ -354,21 +335,4 @@ func getIndentation(line string) string {
 		}
 	}
 	return ""
-}
-
-// getProperIndentation attempts to correct the indentation
-func getProperIndentation(currentIndent string) string {
-	// Count number of spaces
-	count := 0
-	for _, c := range currentIndent {
-		if c == ' ' {
-			count++
-		} else if c == '\t' {
-			count += 4 // Assume a tab is 4 spaces
-		}
-	}
-	
-	// Round to nearest 4 spaces
-	properCount := (count + 2) / 4 * 4
-	return strings.Repeat(" ", properCount)
 }
