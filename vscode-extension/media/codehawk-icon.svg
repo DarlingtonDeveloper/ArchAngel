@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="128" height="128">
+  <!-- Background -->
+  <circle cx="12" cy="12" r="11" fill="#3366cc" />
+  
+  <!-- Hawk Head -->
+  <path d="M17.5 7c-1.5-1-3.5-1-5 0L12 8l-.5-1c-1.5-1-3.5-1-5 0-.6.4-.5 1.2 0 1.5L9 10l-3.5 3.5c-.5.5-.5 1.3 0 1.8.5.5 1.3.5 1.8 0L9 13.5l1.5 1.5c.5.5.5 1.3 0 1.8L9 18.3c-.5.5-.5 1.3 0 1.8.5.5 1.3.5 1.8 0L12 19l1.2 1.1c.5.5 1.3.5 1.8 0 .5-.5.5-1.3 0-1.8l-1.5-1.5c-.5-.5-.5-1.3 0-1.8l1.5-1.5 1.7 1.7c.5.5 1.3.5 1.8 0 .5-.5.5-1.3 0-1.8L15 10l2.5-1.5c.5-.3.6-1.1 0-1.5z" fill="#ffffff" />
+  
+  <!-- Eye -->
+  <circle cx="14.5" cy="9" r="1" fill="#3366cc" />
+  
+  <!-- Code Brackets -->
+  <path d="M6 8L4 12l2 4M18 8l2 4-2 4" stroke="#ffffff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

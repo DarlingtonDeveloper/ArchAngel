@@ -4,6 +4,8 @@ import { ResultsProvider } from './providers/resultsProvider';
 import { SuggestionsProvider } from './providers/suggestionsProvider';
 import { CodeActionsProvider } from './providers/codeActionsProvider';
 import { checkApiConfiguration } from './utils/api';
+import { DiagnosticManager } from './utils/diagnosticManager';
+import { SettingsWebview } from './views/settingsWebview';
 
 let statusBarItem: vscode.StatusBarItem;
 
@@ -77,7 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         vscode.commands.registerCommand('codehawk.configure', () => {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'codehawk');
+            SettingsWebview.createOrShow(context.extensionPath);
         })
     );
 
@@ -112,5 +114,9 @@ export function deactivate() {
     if (statusBarItem) {
         statusBarItem.dispose();
     }
+
+    // Clean up diagnostic manager
+    DiagnosticManager.getInstance().dispose();
+
     console.log('CodeHawk extension has been deactivated');
 }

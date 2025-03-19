@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,16 +11,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yourusername/codehawk/backend/pkg/analyzer"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
+
+// Global linter registry
+var linterRegistry *analyzer.LinterRegistry
 
 func main() {
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
 	}
+
+	// Initialize the linter registry
+	initLinterRegistry()
 
 	// Set up the server
 	router := setupRouter()
@@ -57,6 +65,36 @@ func main() {
 	}
 
 	log.Println("Server exited properly")
+}
+
+// Initialize linter registry with supported linters
+func initLinterRegistry() {
+	linterRegistry = analyzer.NewLinterRegistry()
+	
+	// Register Python linter
+	pythonLinter := analyzer.NewPythonLinter(map[string]string{
+		"pylintPath": os.Getenv("PYLINT_PATH"),
+		"timeout":    "15s",
+	})
+	linterRegistry.Register(pythonLinter)
+	
+	// Register JavaScript linter
+	jsLinter := analyzer.NewJavaScriptLinter(map[string]string{
+		"eslintPath": os.Getenv("ESLINT_PATH"),
+		"configPath": os.Getenv("ESLINT_CONFIG"),
+		"timeout":    "15s",
+	})
+	linterRegistry.Register(jsLinter)
+	
+	// Register TypeScript linter
+	tsLinter := analyzer.NewTypeScriptLinter(map[string]string{
+		"eslintPath": os.Getenv("ESLINT_PATH"),
+		"configPath": os.Getenv("TSLINT_CONFIG"),
+		"timeout":    "15s",
+	})
+	linterRegistry.Register(tsLinter)
+	
+	log.Printf("Initialized linter registry with %d linters\n", len(linterRegistry.GetSupportedLanguages()))
 }
 
 func setupRouter() *gin.Engine {
@@ -113,8 +151,10 @@ func setupRouter() *gin.Engine {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"status": "UP",
-			"time":   time.Now().Format(time.RFC3339),
+			"status":   "UP",
+			"time":     time.Now().Format(time.RFC3339),
+			"version":  "0.1.0",
+			"linters":  linterRegistry.GetSupportedLanguages(),
 		})
 	})
 	
@@ -130,6 +170,9 @@ func setupRouter() *gin.Engine {
 		// Get language-specific rules
 		v1.GET("/rules/:language", getLanguageRules)
 		
+		// Get supported languages
+		v1.GET("/languages", getSupportedLanguages)
+		
 		// Webhook notifications
 		v1.POST("/webhook/notify", webhookNotify)
 	}
@@ -140,9 +183,10 @@ func setupRouter() *gin.Engine {
 // Handler for code analysis endpoint
 func analyzeCode(c *gin.Context) {
 	var request struct {
-		Code     string `json:"code" binding:"required"`
-		Language string `json:"language" binding:"required"`
-		Context  string `json:"context"`
+		Code     string                 `json:"code" binding:"required"`
+		Language string                 `json:"language" binding:"required"`
+		Context  string                 `json:"context"`
+		Options  map[string]interface{} `json:"options"`
 	}
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -153,38 +197,50 @@ func analyzeCode(c *gin.Context) {
 		return
 	}
 	
-	// Generate a unique ID for this analysis
-	analysisID := fmt.Sprintf("analysis-%d", time.Now().UnixNano())
+	// Check if we have a linter for this language
+	linter, ok := linterRegistry.GetLinter(request.Language)
+	if !ok {
+		// Fall back to generic analysis
+		result := analyzeGenericCode(request.Code)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "success",
+			"id":        fmt.Sprintf("analysis-%d", time.Now().UnixNano()),
+			"language":  request.Language,
+			"context":   request.Context,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"issues":    result,
+		})
+		return
+	}
 	
-	// Process the code based on the language
-	var issues []map[string]interface{}
-	switch request.Language {
-	case "python":
-		issues = analyzePythonCode(request.Code)
-	case "javascript":
-	case "typescript":
-		issues = analyzeJavaScriptCode(request.Code)
-	case "go":
-		issues = analyzeGoCode(request.Code)
-	case "java":
-		issues = analyzeJavaCode(request.Code)
-	case "csharp":
-		issues = analyzeCSharpCode(request.Code)
-	case "php":
-		issues = analyzePHPCode(request.Code)
-	case "ruby":
-		issues = analyzeRubyCode(request.Code)
-	default:
-		issues = analyzeGenericCode(request.Code)
+	// Analyze the code using the appropriate linter
+	ctx := context.Background()
+	result, err := linter.Analyze(ctx, request.Code, request.Options)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  "error",
+			"message": "Analysis failed: " + err.Error(),
+		})
+		return
+	}
+	
+	// Generate suggestions if not already included
+	if len(result.Suggestions) == 0 {
+		suggestions, err := linter.SuggestFixes(ctx, request.Code, result.Issues)
+		if err == nil && len(suggestions) > 0 {
+			result.Suggestions = suggestions
+		}
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"status": "success",
-		"id":     analysisID,
-		"language": request.Language,
-		"context": request.Context,
-		"timestamp": time.Now().Format(time.RFC3339),
-		"issues": issues,
+		"status":      "success",
+		"id":          fmt.Sprintf("analysis-%d", time.Now().UnixNano()),
+		"language":    request.Language,
+		"context":     request.Context,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"issues":      result.Issues,
+		"suggestions": result.Suggestions,
 	})
 }
 
@@ -196,22 +252,22 @@ func getAnalysisById(c *gin.Context) {
 	// For now, return a mock response
 	
 	c.JSON(http.StatusOK, gin.H{
-		"status": "success",
-		"id":     id,
-		"language": "python",
+		"status":    "success",
+		"id":        id,
+		"language":  "python",
 		"timestamp": time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 		"issues": []map[string]interface{}{
 			{
 				"line":     1,
 				"message":  "Missing docstring",
 				"severity": "warning",
-				"ruleId":   "PY001",
+				"ruleId":   "missing-docstring",
 			},
 			{
 				"line":     1,
 				"message":  "Use logging instead of print",
 				"severity": "suggestion",
-				"ruleId":   "PY002",
+				"ruleId":   "print-used",
 			},
 		},
 	})
@@ -227,13 +283,13 @@ func getLanguageRules(c *gin.Context) {
 	case "python":
 		rules = []map[string]interface{}{
 			{
-				"id":          "PY001",
+				"id":          "missing-docstring",
 				"name":        "Missing Docstring",
 				"description": "Functions, classes, and modules should have docstrings",
 				"severity":    "warning",
 			},
 			{
-				"id":          "PY002",
+				"id":          "print-used",
 				"name":        "Use Logging",
 				"description": "Use logging module instead of print statements",
 				"severity":    "suggestion",
@@ -243,15 +299,15 @@ func getLanguageRules(c *gin.Context) {
 	case "typescript":
 		rules = []map[string]interface{}{
 			{
-				"id":          "JS001",
+				"id":          "semi",
 				"name":        "Missing Semicolon",
 				"description": "Statements should end with a semicolon",
 				"severity":    "error",
 			},
 			{
-				"id":          "JS002",
-				"name":        "Prefer Const",
-				"description": "Use const for variables that are never reassigned",
+				"id":          "no-var",
+				"name":        "Prefer Const/Let",
+				"description": "Use const or let instead of var",
 				"severity":    "warning",
 			},
 		}
@@ -260,9 +316,19 @@ func getLanguageRules(c *gin.Context) {
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
+		"status":   "success",
 		"language": language,
-		"rules":   rules,
+		"rules":    rules,
+	})
+}
+
+// Handler for getting supported languages
+func getSupportedLanguages(c *gin.Context) {
+	languages := linterRegistry.GetSupportedLanguages()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"languages": languages,
 	})
 }
 
@@ -289,133 +355,7 @@ func webhookNotify(c *gin.Context) {
 	})
 }
 
-// Language-specific analysis functions
-
-func analyzePythonCode(code string) []map[string]interface{} {
-	// This would be replaced with actual Python linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Missing docstring",
-			"severity": "warning",
-			"ruleId":   "PY001",
-		},
-		{
-			"line":     1,
-			"message":  "Use logging instead of print",
-			"severity": "suggestion",
-			"ruleId":   "PY002",
-		},
-	}
-}
-
-func analyzeJavaScriptCode(code string) []map[string]interface{} {
-	// This would be replaced with actual JavaScript linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Missing semicolon",
-			"severity": "error",
-			"ruleId":   "JS001",
-		},
-		{
-			"line":     1,
-			"message":  "Prefer const over let",
-			"severity": "warning",
-			"ruleId":   "JS002",
-		},
-	}
-}
-
-func analyzeGoCode(code string) []map[string]interface{} {
-	// This would be replaced with actual Go linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Exported function missing comment",
-			"severity": "warning",
-			"ruleId":   "GO001",
-		},
-		{
-			"line":     1,
-			"message":  "Error not handled",
-			"severity": "error",
-			"ruleId":   "GO002",
-		},
-	}
-}
-
-func analyzeJavaCode(code string) []map[string]interface{} {
-	// This would be replaced with actual Java linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Class should be in its own file",
-			"severity": "warning",
-			"ruleId":   "JV001",
-		},
-		{
-			"line":     1,
-			"message":  "Missing Javadoc comment",
-			"severity": "warning",
-			"ruleId":   "JV002",
-		},
-	}
-}
-
-func analyzeCSharpCode(code string) []map[string]interface{} {
-	// This would be replaced with actual C# linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Use var instead of explicit type",
-			"severity": "suggestion",
-			"ruleId":   "CS001",
-		},
-		{
-			"line":     1,
-			"message":  "Class name should be PascalCase",
-			"severity": "warning",
-			"ruleId":   "CS002",
-		},
-	}
-}
-
-func analyzePHPCode(code string) []map[string]interface{} {
-	// This would be replaced with actual PHP linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Use strict comparison (===)",
-			"severity": "warning",
-			"ruleId":   "PHP001",
-		},
-		{
-			"line":     1,
-			"message":  "Function name should be camelCase",
-			"severity": "warning",
-			"ruleId":   "PHP002",
-		},
-	}
-}
-
-func analyzeRubyCode(code string) []map[string]interface{} {
-	// This would be replaced with actual Ruby linting/analysis
-	return []map[string]interface{}{
-		{
-			"line":     1,
-			"message":  "Use snake_case for method names",
-			"severity": "warning",
-			"ruleId":   "RB001",
-		},
-		{
-			"line":     1,
-			"message":  "Prefer single quotes for strings",
-			"severity": "suggestion",
-			"ruleId":   "RB002",
-		},
-	}
-}
+// Utility functions for analyzing code when no specific linter is available
 
 func analyzeGenericCode(code string) []map[string]interface{} {
 	// This would be replaced with generic code analysis
@@ -424,7 +364,7 @@ func analyzeGenericCode(code string) []map[string]interface{} {
 			"line":     1,
 			"message":  "Line too long (>100 characters)",
 			"severity": "warning",
-			"ruleId":   "GEN001",
+			"ruleId":   "line-length",
 		},
 	}
 }

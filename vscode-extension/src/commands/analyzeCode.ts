@@ -41,6 +41,8 @@ function getFileContext(document: vscode.TextDocument): string {
 /**
  * Process analysis results and update VS Code diagnostics
  */
+import { DiagnosticManager } from '../utils/diagnosticManager';
+
 function processResults(
     document: vscode.TextDocument,
     results: any,
@@ -48,44 +50,15 @@ function processResults(
     resultsProvider: ResultsProvider,
     suggestionsProvider: SuggestionsProvider
 ): void {
-    // Create a new diagnostics collection if it doesn't exist
-    let diagnosticCollection = vscode.languages.getDiagnostics(document.uri);
-    if (!diagnosticCollection) {
-        diagnosticCollection = [];
-    }
+    // Get the diagnostic manager
+    const diagnosticManager = DiagnosticManager.getInstance();
 
-    // Create diagnostic items from the analysis results
-    const diagnostics: vscode.Diagnostic[] = [];
-
+    // Set diagnostics for the document
     if (results.issues && Array.isArray(results.issues)) {
-        results.issues.forEach((issue: any) => {
-            // Create a diagnostic
-            const lineIndex = Math.max(0, issue.line - 1); // VS Code is 0-based, API might be 1-based
-            const line = document.lineAt(lineIndex);
-
-            const range = new vscode.Range(
-                lineIndex,
-                issue.column ? Math.max(0, issue.column - 1) : 0,
-                lineIndex,
-                line.text.length
-            );
-
-            const severity = getSeverity(issue.severity);
-            const diagnostic = new vscode.Diagnostic(
-                range,
-                issue.message,
-                severity
-            );
-
-            diagnostic.source = 'CodeHawk';
-            diagnostic.code = issue.ruleId || '';
-
-            diagnostics.push(diagnostic);
-        });
+        diagnosticManager.setDiagnostics(document, results.issues);
+    } else {
+        diagnosticManager.clearDiagnostics(document.uri);
     }
-
-    // Update diagnostics
-    vscode.languages.getDiagnostics().set(document.uri, diagnostics);
 
     // Update the results and suggestions providers
     resultsProvider.update(results);
