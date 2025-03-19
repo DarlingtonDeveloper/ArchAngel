@@ -6,11 +6,16 @@ import { CodeActionsProvider } from './providers/codeActionsProvider';
 import { checkApiConfiguration } from './utils/api';
 import { DiagnosticManager } from './utils/diagnosticManager';
 import { SettingsWebview } from './views/settingsWebview';
+import { TelemetryService } from './utils/telemetry';
 
 let statusBarItem: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('CodeHawk extension is now active');
+
+    // Initialize telemetry
+    const telemetry = TelemetryService.getInstance(context);
+    telemetry.sendEvent('extension_activated');
 
     // Create status bar item
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -117,6 +122,11 @@ export function deactivate() {
 
     // Clean up diagnostic manager
     DiagnosticManager.getInstance().dispose();
+
+    // Dispose telemetry and send final event
+    const telemetry = TelemetryService.getInstance(vscode.ExtensionContext);
+    telemetry.sendEvent('extension_deactivated');
+    telemetry.dispose();
 
     console.log('CodeHawk extension has been deactivated');
 }
