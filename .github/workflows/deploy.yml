@@ -1,0 +1,161 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release-backend:
+    name: Release Backend
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.18
+      
+      - name: Build backend
+        run: |
+          cd codehawk/backend
+          make build
+      
+      - name: Get the version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      
+      - name: Build and push backend image
+        uses: docker/build-push-action@v3
+        with:
+          context: ./codehawk/backend
+          push: true
+          tags: |
+            codehawk/api:latest
+            codehawk/api:${{ env.VERSION }}
+      
+      - name: Build and push linters image
+        uses: docker/build-push-action@v3
+        with:
+          context: ./codehawk/backend
+          file: ./codehawk/backend/Dockerfile.linters
+          push: true
+          tags: |
+            codehawk/linters:latest
+            codehawk/linters:${{ env.VERSION }}
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+  
+  release-extension:
+    name: Release VS Code Extension
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
+      
+      - name: Install dependencies
+        run: |
+          cd codehawk/vscode-extension
+          npm ci
+      
+      - name: Compile and package extension
+        run: |
+          cd codehawk/vscode-extension
+          npm run compile
+          npm run package
+      
+      - name: Get extension file name
+        id: get_extension
+        run: |
+          cd codehawk/vscode-extension
+          echo "VSIX_PATH=$(ls *.vsix)" >> $GITHUB_ENV
+      
+      - name: Upload extension to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./codehawk/vscode-extension/${{ env.VSIX_PATH }}
+          asset_name: ${{ env.VSIX_PATH }}
+          asset_content_type: application/octet-stream
+      
+      - name: Publish to VS Code Marketplace
+        if: success()
+        run: |
+          cd codehawk/vscode-extension
+          npm run publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+  
+  deploy-to-kubernetes:
+    name: Deploy to Kubernetes
+    needs: [release-backend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Get the version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+      
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+      
+      - name: Update Kubernetes manifests
+        run: |
+          cd kubernetes
+          sed -i "s|codehawk/api:latest|codehawk/api:${{ env.VERSION }}|g" deployment.yaml
+          sed -i "s|codehawk/linters:latest|codehawk/linters:${{ env.VERSION }}|g" deployment.yaml
+      
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f kubernetes/namespace.yaml
+          kubectl apply -f kubernetes/configmap.yaml
+          kubectl apply -f kubernetes/secret.yaml
+          kubectl apply -f kubernetes/deployment.yaml
+          kubectl apply -f kubernetes/service.yaml
+          kubectl apply -f kubernetes/ingress.yaml
+          
+          # Wait for deployment to complete
+          kubectl rollout status deployment/codehawk-api -n codehawk
+      
+      - name: Verify deployment
+        run: |
+          kubectl get all -n codehawk
+          echo "Deployment completed successfully!"
