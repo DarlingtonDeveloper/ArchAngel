@@ -1,0 +1,133 @@
+{
+    "name": "codehawk",
+    "displayName": "CodeHawk",
+    "description": "Smart Linting & Automated Code Review with AI-powered suggestions",
+    "version": "0.1.0",
+    "publisher": "codehawk",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Linters",
+        "Programming Languages",
+        "Other"
+    ],
+    "activationEvents": [
+        "onCommand:codehawk.analyzeCurrentFile",
+        "onCommand:codehawk.analyzeSelection",
+        "onCommand:codehawk.showResults",
+        "onLanguage:javascript",
+        "onLanguage:typescript",
+        "onLanguage:python",
+        "onLanguage:go",
+        "onLanguage:java",
+        "onLanguage:csharp",
+        "onLanguage:php",
+        "onLanguage:ruby"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "codehawk.analyzeCurrentFile",
+                "title": "CodeHawk: Analyze Current File"
+            },
+            {
+                "command": "codehawk.analyzeSelection",
+                "title": "CodeHawk: Analyze Selected Code"
+            },
+            {
+                "command": "codehawk.showResults",
+                "title": "CodeHawk: Show Analysis Results"
+            },
+            {
+                "command": "codehawk.configure",
+                "title": "CodeHawk: Configure Settings"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "when": "editorHasSelection",
+                    "command": "codehawk.analyzeSelection",
+                    "group": "9_cutcopypaste"
+                }
+            ],
+            "editor/title": [
+                {
+                    "command": "codehawk.analyzeCurrentFile",
+                    "group": "navigation"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "CodeHawk",
+            "properties": {
+                "codehawk.apiUrl": {
+                    "type": "string",
+                    "default": "http://localhost:8080",
+                    "description": "URL of the CodeHawk API server"
+                },
+                "codehawk.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "API key for authenticating with the CodeHawk service"
+                },
+                "codehawk.autoAnalyze": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Automatically analyze files when they are saved"
+                },
+                "codehawk.showInlineIssues": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show issues inline in the editor"
+                }
+            }
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "codehawk-explorer",
+                    "title": "CodeHawk",
+                    "icon": "media/codehawk-icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "codehawk-explorer": [
+                {
+                    "id": "codehawkResults",
+                    "name": "Analysis Results"
+                },
+                {
+                    "id": "codehawkSuggestions",
+                    "name": "AI Suggestions"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/glob": "^7.1.4",
+        "@types/mocha": "^9.0.0",
+        "@types/node": "14.x",
+        "@types/vscode": "^1.60.0",
+        "@typescript-eslint/eslint-plugin": "^4.31.1",
+        "@typescript-eslint/parser": "^4.31.1",
+        "eslint": "^7.32.0",
+        "glob": "^7.1.7",
+        "mocha": "^9.1.1",
+        "typescript": "^4.4.3",
+        "vscode-test": "^1.6.1"
+    },
+    "dependencies": {
+        "axios": "^0.24.0"
+    }
+}
