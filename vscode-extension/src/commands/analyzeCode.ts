@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
-import { analyzeCode } from '../utils/api';
+import { getApiClient } from '../api/client';
+import { AnalysisResponse } from '../api/types';
 import { ResultsProvider } from '../providers/resultsProvider';
 import { SuggestionsProvider } from '../providers/suggestionsProvider';
+import { DiagnosticManager } from '../utils/diagnosticManager';
 
 /**
  * Map VS Code language IDs to CodeHawk language identifiers
@@ -41,11 +43,9 @@ function getFileContext(document: vscode.TextDocument): string {
 /**
  * Process analysis results and update VS Code diagnostics
  */
-import { DiagnosticManager } from '../utils/diagnosticManager';
-
-function processResults(
+export function processResults(
     document: vscode.TextDocument,
-    results: any,
+    results: AnalysisResponse,
     context: vscode.ExtensionContext,
     resultsProvider: ResultsProvider,
     suggestionsProvider: SuggestionsProvider
@@ -70,24 +70,18 @@ function processResults(
 
     // Show a summary in the status bar
     const issueCount = results.issues ? results.issues.length : 0;
-    vscode.window.setStatusBarMessage(`CodeHawk: Found ${issueCount} issues`, 5000);
-}
+    const suggestionCount = results.suggestions ? results.suggestions.length : 0;
 
-/**
- * Map API severity to VS Code DiagnosticSeverity
- */
-function getSeverity(apiSeverity: string): vscode.DiagnosticSeverity {
-    switch (apiSeverity.toLowerCase()) {
-        case 'error':
-            return vscode.DiagnosticSeverity.Error;
-        case 'warning':
-            return vscode.DiagnosticSeverity.Warning;
-        case 'suggestion':
-        case 'info':
-            return vscode.DiagnosticSeverity.Information;
-        default:
-            return vscode.DiagnosticSeverity.Hint;
+    let message = `CodeHawk: Found ${issueCount} issues`;
+    if (suggestionCount > 0) {
+        message += ` and ${suggestionCount} suggestions`;
     }
+
+    if (results.aiEnhanced) {
+        message += " (AI-enhanced)";
+    }
+
+    vscode.window.setStatusBarMessage(message, 5000);
 }
 
 /**
@@ -110,10 +104,33 @@ export async function analyzeCurrentFile(
     const code = document.getText();
 
     try {
-        const results = await analyzeCode(code, language, fileContext);
-        processResults(document, results, context, resultsProvider, suggestionsProvider);
+        // Get API client
+        const client = getApiClient();
+
+        // Show progress notification
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "CodeHawk Analysis",
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: "Analyzing code..." });
+
+            // Make request
+            const results = await client.analyzeCode({
+                code,
+                language,
+                context: fileContext,
+                options: {
+                    // Get additional options from settings
+                    ai_suggestions: vscode.workspace.getConfiguration('codehawk').get<boolean>('aiSuggestions', true)
+                }
+            });
+
+            // Process results
+            processResults(document, results, context, resultsProvider, suggestionsProvider);
+        });
     } catch (error) {
-        vscode.window.showErrorMessage(`Failed to analyze code: ${error}`);
+        vscode.window.showErrorMessage(`Failed to analyze code: ${(error as Error).message}`);
         throw error;
     }
 }
@@ -140,23 +157,51 @@ export async function analyzeSelection(
 
     const document = editor.document;
     const language = getLanguageIdentifier(document.languageId);
-    const fileContext = getFileContext(document);
+    const fileContext = getFileContext(document) + ' (selection)';
     const code = document.getText(selection);
 
     try {
-        const results = await analyzeCode(code, language, fileContext);
+        // Get API client
+        const client = getApiClient();
 
-        // Adjust line numbers to be relative to the selection
-        const selectionStartLine = selection.start.line;
-        if (results.issues && Array.isArray(results.issues)) {
-            results.issues.forEach((issue: any) => {
-                issue.line = issue.line + selectionStartLine;
+        // Show progress notification
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "CodeHawk Analysis",
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: "Analyzing selected code..." });
+
+            // Make request
+            const results = await client.analyzeCode({
+                code,
+                language,
+                context: fileContext,
+                options: {
+                    // Get additional options from settings
+                    ai_suggestions: vscode.workspace.getConfiguration('codehawk').get<boolean>('aiSuggestions', true)
+                }
             });
-        }
 
-        processResults(document, results, context, resultsProvider, suggestionsProvider);
+            // Adjust line numbers to be relative to the selection
+            const selectionStartLine = selection.start.line;
+            if (results.issues && Array.isArray(results.issues)) {
+                results.issues.forEach((issue) => {
+                    issue.line = issue.line + selectionStartLine;
+                });
+            }
+
+            if (results.suggestions && Array.isArray(results.suggestions)) {
+                results.suggestions.forEach((suggestion) => {
+                    suggestion.line = suggestion.line + selectionStartLine;
+                });
+            }
+
+            // Process results
+            processResults(document, results, context, resultsProvider, suggestionsProvider);
+        });
     } catch (error) {
-        vscode.window.showErrorMessage(`Failed to analyze code: ${error}`);
+        vscode.window.showErrorMessage(`Failed to analyze code: ${(error as Error).message}`);
         throw error;
     }
 }
