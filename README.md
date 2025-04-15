@@ -1,22 +1,22 @@
-# CodeHawk: Smart Linting & Automated Code Review Platform
+# ArchAngel: Smart Linting & Automated Code Review Platform
 
 <p align="center">
-  <img src="docs/images/codehawk-logo.png" alt="CodeHawk Logo" width="200"/>
+  <img src="docs/images/ArchAngel-logo.png" alt="ArchAngel Logo" width="200"/>
   <br>
   <em>Write better code, faster.</em>
 </p>
 
-[![CI Status](https://github.com/yourusername/codehawk/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/codehawk/actions/workflows/ci.yml)
-[![VS Code Extension](https://img.shields.io/visual-studio-marketplace/v/codehawk.codehawk)](https://marketplace.visualstudio.com/items?itemName=codehawk.codehawk)
+[![CI Status](https://github.com/yourusername/ArchAngel/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/ArchAngel/actions/workflows/ci.yml)
+[![VS Code Extension](https://img.shields.io/visual-studio-marketplace/v/ArchAngel.ArchAngel)](https://marketplace.visualstudio.com/items?itemName=ArchAngel.ArchAngel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Overview
 
-CodeHawk is a comprehensive code quality platform designed for modern development environments, particularly focused on helping teams who use AI-assisted coding ("vibe coding") to maintain high-quality standards. CodeHawk integrates directly into your development workflow through a VS Code extension and CI/CD integrations, providing real-time feedback, smart suggestions, and automated fixes.
+ArchAngel is a comprehensive code quality platform designed for modern development environments, particularly focused on helping teams who use AI-assisted coding ("vibe coding") to maintain high-quality standards. ArchAngel integrates directly into your development workflow through a VS Code extension and CI/CD integrations, providing real-time feedback, smart suggestions, and automated fixes.
 
 ### The Problem We Solve
 
-As AI tools become more common in code generation, traditional code review processes are being challenged. CodeHawk addresses:
+As AI tools become more common in code generation, traditional code review processes are being challenged. ArchAngel addresses:
 
 1. **Inconsistent Quality**: Ensuring AI-generated code follows best practices
 2. **Scalability of Reviews**: Automating repetitive code quality checks
@@ -25,10 +25,10 @@ As AI tools become more common in code generation, traditional code review proce
 
 ## System Architecture
 
-CodeHawk follows a modern, distributed architecture:
+ArchAngel follows a modern, distributed architecture:
 
 <p align="center">
-  <img src="docs/images/architecture-diagram.png" alt="CodeHawk Architecture" width="700"/>
+  <img src="docs/images/architecture-diagram.png" alt="ArchAngel Architecture" width="700"/>
 </p>
 
 ### Core Components
@@ -51,7 +51,7 @@ CodeHawk follows a modern, distributed architecture:
 
 ## Target Audience
 
-CodeHawk is designed for:
+ArchAngel is designed for:
 
 - **Individual Developers**: Who want to improve their code quality
 - **Development Teams**: Seeking consistent standards across the team
@@ -62,7 +62,7 @@ CodeHawk is designed for:
 
 - [Installation Guide](docs/installation.md)
 - [Quick Start](docs/quickstart.md)
-- [VS Code Extension](codehawk/vscode-extension/README.md)
+- [VS Code Extension](ArchAngel/vscode-extension/README.md)
 - [API Documentation](api/README.md)
 - [Enterprise Guide](docs/enterprise.md)
 
@@ -75,11 +75,11 @@ CodeHawk is designed for:
 
 ## Community & Support
 
-- [Join Our Discord](https://discord.gg/codehawk)
-- [Report an Issue](https://github.com/yourusername/codehawk/issues)
-- [Request a Feature](https://github.com/yourusername/codehawk/issues/new?template=feature_request.md)
-- [Email Support](mailto:support@codehawk.dev)
+- [Join Our Discord](https://discord.gg/ArchAngel)
+- [Report an Issue](https://github.com/yourusername/ArchAngel/issues)
+- [Request a Feature](https://github.com/yourusername/ArchAngel/issues/new?template=feature_request.md)
+- [Email Support](mailto:support@ArchAngel.dev)
 
 ## License
 
-CodeHawk is available under the [MIT License](LICENSE).
+ArchAngel is available under the [MIT License](LICENSE).
